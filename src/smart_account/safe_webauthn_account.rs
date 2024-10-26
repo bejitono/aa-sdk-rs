@@ -1,23 +1,27 @@
 use super::{AccountError, BaseAccount, SmartAccountSigner};
 
 use crate::contracts::safe_proxy_factory::SafeProxyFactoryCalls;
-use crate::contracts::EntryPoint as EthersEntryPoint;
 use crate::contracts::{
     self, safe_proxy_factory, EnableModulesCall, ExecuteUserOpCall, Safe4337Module,
     Safe4337ModuleCalls, SafeL2Calls, UserOperation,
 };
+use crate::contracts::{
+    safe_multi_send, safe_web_authn_shared_signer, EntryPoint as EthersEntryPoint,
+};
 use crate::types::{ExecuteCall, UserOperationRequest};
 
 use async_trait::async_trait;
-use ethers::abi::AbiEncode;
+use ethers::abi::{self, AbiEncode, Token};
+use ethers::core::k256::elliptic_curve::consts::{U2, U25};
 use ethers::providers::{Http, Middleware};
-use ethers::types::Chain;
+use ethers::types::{Chain, H160};
 use ethers::{
     providers::Provider,
     types::{Address, Bytes, U256},
 };
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -25,14 +29,17 @@ use tokio::sync::RwLock;
 // const SIMPLE_ACCOUNT_FACTORY_ADDRESS: &str = "0x9406Cc6185a346906296840746125a0E44976454";
 
 const SAFE_4337_MODULE_ADDRESS: &str = "0xa581c4A4DB7175302464fF3C06380BC3270b4037";
+const P256_VERIFIER_ADDRESS: &str = "0x445a0683e494ea0c5AF3E83c5159fBE47Cf9e765";//"0xc2b78104907F722DABAc4C69f826a522B2754De4";//"0x445a0683e494ea0c5AF3E83c5159fBE47Cf9e765";
 const ADD_MODULES_LIB_ADDRESS: &str = "0x8EcD4ec46D4D2a6B64fE960B3D64e8B94B2234eb";
 const SAFE_PROXY_FACTORY_ADDRESS: &str = "0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67";
 const SAFE_SINGLETON_ADDRESS: &str = "0x29fcB43b46531BcA003ddC8FCB67FFE91900C762";
 const ENTRYPOINT_ADDRESS: &str = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789";
 const FALLBACK_HANDLER_ADDRESS: &str = "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99";
+const WEBAUTHN_SHARED_SIGNER_ADDRESS: &str = "0x94a4F6affBd8975951142c3999aEAB7ecee555c2";
+const MULTI_SEND_ADDRESS: &str = "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761";
 
 #[derive(Debug)]
-pub struct SafeStandardAccount {
+pub struct SafeWebAuthnAccount {
     inner: Arc<Provider<Http>>,
     owners: Vec<Address>,
     threshold: U256,
@@ -45,7 +52,7 @@ pub struct SafeStandardAccount {
     chain: Chain,
 }
 
-impl SafeStandardAccount {
+impl SafeWebAuthnAccount {
     pub fn new(
         inner: Arc<Provider<Http>>,
         owners: Vec<Address>,
@@ -76,7 +83,7 @@ impl SafeStandardAccount {
 }
 
 #[async_trait]
-impl BaseAccount for SafeStandardAccount {
+impl BaseAccount for SafeWebAuthnAccount {
     type EntryPoint = EthersEntryPoint<Provider<Http>>;
     type Provider = Http;
     type Inner = Provider<Http>;
@@ -94,35 +101,79 @@ impl BaseAccount for SafeStandardAccount {
     }
 
     async fn get_account_address(&self) -> Result<Address, AccountError> {
-        let Some(account_address) = *self.account_address.read().await else {
+        // let Some(account_address) = *self.account_address.read().await else {
             let address: Address = self.get_counterfactual_address().await?;
             println!("Counterfactual address: {:x}", address);
             *self.account_address.write().await = Some(address);
             return Ok(address);
-        };
+        // };
 
-        Ok(account_address)
+        // Ok(account_address)
     }
 
     async fn get_account_init_code(&self) -> Result<Bytes, AccountError> {
         // TODO: Add optional index
-        let index = U256::from(0);
+        let index = U256::from(1);
 
         // TODO: getChainSpecificDefaultSaltNonce
         let safe_4337_module_address: Address = SAFE_4337_MODULE_ADDRESS.parse().unwrap();
         let add_modules_lib_address: Address = ADD_MODULES_LIB_ADDRESS.parse().unwrap();
+        let p256_verifier_address: Address = P256_VERIFIER_ADDRESS.parse().unwrap();
+        let webauthn_shared_signer_address: Address =
+            WEBAUTHN_SHARED_SIGNER_ADDRESS.parse().unwrap();
+        let multi_send_address: Address = MULTI_SEND_ADDRESS.parse().unwrap();
         let enable_modules_call = EnableModulesCall {
             modules: vec![safe_4337_module_address],
         };
-        let encoded_enable_modules_call: Bytes = enable_modules_call.encode().into();
+
+        let webauthn_signer = safe_web_authn_shared_signer::Signer {
+            x: U256::from_str(
+                "0x8929297eae721cd36fb297a42934950ee6d4366144e70013f5da7db89f8fabcf",//"0x3ec596dddac5e3318b566a3dc4557d607b3d3944afb0139220b359ee46d3cd30"//"0x8929297eae721cd36fb297a42934950ee6d4366144e70013f5da7db89f8fabcf",
+            ).unwrap(),
+            y: U256::from_str(
+                "0x6ad5af444e1e73db253547565a9f61e381c6ecf053d9d8f4ff89151c7c6cc020",//"0x79ff1a3947f4ae1837636d437851ac3484d83877f7fce876e4ffdb151fe9fdad"//"0x6ad5af444e1e73db253547565a9f61e381c6ecf053d9d8f4ff89151c7c6cc020",
+            ).unwrap(),
+            verifiers: p256_verifier_address.as_bytes().into(),
+        };
+
+        let configure_call = safe_web_authn_shared_signer::ConfigureCall {
+            signer: webauthn_signer,
+        };
+        
+        let configure_call_data: Vec<u8> = configure_call.encode();
+        let enable_modules_data: Vec<u8> = enable_modules_call.encode();
+
+        let multi_send_transaction_data: Bytes = abi::encode_packed(&[
+            // configure signer
+            Token::Uint(U256::from(1)),
+            Token::Address(webauthn_shared_signer_address),
+            Token::Uint(U256::zero()),
+            Token::Uint(U256::from(configure_call_data.len())),
+            Token::Bytes(configure_call_data),
+            // enable modules
+            Token::Uint(U256::from(1)),
+            Token::Address(add_modules_lib_address),
+            Token::Uint(U256::zero()),
+            Token::Uint(U256::from(enable_modules_data.len())),
+            Token::Bytes(enable_modules_data),
+        ])
+        .unwrap()
+        .into();
+
+        let multi_send_call = safe_multi_send::MultiSendCall {
+            transactions: multi_send_transaction_data,
+        };
+
+        let mut owners = self.owners.clone();//Vec::<H160>::new();//self.owners.clone();
+        owners.push(webauthn_shared_signer_address);
 
         // Should be same as 4337 module address.
         let fallback_handler_address: Address = safe_4337_module_address;
         let setup_call_params = contracts::safe_l2::SetupCall {
-            owners: self.owners.clone(),
+            owners: owners,
             threshold: self.threshold,
-            to: add_modules_lib_address,
-            data: encoded_enable_modules_call,
+            to: multi_send_address, //add_modules_lib_address,
+            data: multi_send_call.encode().into(),     //encoded_enable_modules_call,
             fallback_handler: fallback_handler_address,
             payment_token: Address::zero(),
             payment: U256::zero(),
@@ -217,7 +268,7 @@ impl BaseAccount for SafeStandardAccount {
     }
 }
 
-impl SafeStandardAccount {
+impl SafeWebAuthnAccount {
     async fn get_safe_user_op_hash<U: Into<UserOperation> + Send + Sync>(
         &self,
         user_op: U,
@@ -269,7 +320,7 @@ impl SafeStandardAccount {
         let nonce: U256 = self.get_nonce().await.unwrap_or(U256::from(0));
         let init_code: Bytes = self.get_init_code().await.unwrap_or(Bytes::new());
 
-        let policy_id = "831ad866-14bf-4f4e-96e7-a5f3d083ba0a";
+        let policy_id = "92cfde40-41a7-4a0a-8487-bca289b6e166";
 
         let updated_user_op_req = user_op_req.nonce(nonce).init_code(init_code);
 
@@ -347,7 +398,7 @@ mod tests {
 
     use super::*;
 
-    const RPC_URL: &str = "https://base-sepolia.g.alchemy.com/v2/IVqOyg3PqHzBQJMqa_yZAfyonF9ne2Gx"; //"https://eth-goerli.g.alchemy.com/v2/Lekp6yzHz5yAPLKPNvGpMKaqbGunnXHS"; //"https://eth-mainnet.g.alchemy.com/v2/lRcdJTfR_zjZSef3yutTGE6OIY9YFx1E";
+    const RPC_URL: &str = "https://base-sepolia.g.alchemy.com/v2/HvnvemJhpDTfxwhfcGGnXHuo_dtgZVN6"; //"https://eth-goerli.g.alchemy.com/v2/Lekp6yzHz5yAPLKPNvGpMKaqbGunnXHS"; //"https://eth-mainnet.g.alchemy.com/v2/lRcdJTfR_zjZSef3yutTGE6OIY9YFx1E";
 
     #[tokio::test]
     async fn test_get_safe_address() {
@@ -362,9 +413,9 @@ mod tests {
             .unwrap();
         let provider = Provider::<Http>::try_from(RPC_URL).unwrap();
 
-        let account = SafeStandardAccount::new(
+        let account = SafeWebAuthnAccount::new(
             Arc::new(provider),
-            vec![wallet.address()],
+            vec![],//vec![wallet.address()],
             U256::one(),
             RwLock::new(None),//RwLock::new(Some(account_address)),
             factory_address,
@@ -376,7 +427,7 @@ mod tests {
 
         let safe_address = account.get_account_address().await.unwrap();
 
-        println!("Signer address: {:x}", wallet.address());
+        // println!("Signer address: {:x}", wallet.address());
         println!("Safe address: {:x}", safe_address);
         // Add assertions for the expected safe address value
         // For example:
@@ -397,7 +448,7 @@ mod tests {
             .unwrap();
         let provider = Provider::<Http>::try_from(RPC_URL).unwrap();
 
-        let account = SafeStandardAccount::new(
+        let account = SafeWebAuthnAccount::new(
             Arc::new(provider),
             vec![wallet.address()],
             U256::one(),
@@ -463,8 +514,8 @@ mod tests {
     }
 
     fn make_provider(
-        account: SafeStandardAccount,
-    ) -> SmartAccountProvider<Http, SafeStandardAccount> {
+        account: SafeWebAuthnAccount,
+    ) -> SmartAccountProvider<Http, SafeWebAuthnAccount> {
         let url: Url = RPC_URL.try_into().unwrap();
         let http_provider = Http::new(url);
 

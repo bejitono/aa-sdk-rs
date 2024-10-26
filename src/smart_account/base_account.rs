@@ -131,6 +131,8 @@ pub trait BaseAccount: Sync + Send + Debug {
             .get_sender_address(init_code)
             .await
             .map_err(AccountError::EntryPointError)
+
+        // TODO: Check null address
     }
 
     // TODO: `Signer` produces an ECDSA signature. Will need to add our own Signer type // should be fine now

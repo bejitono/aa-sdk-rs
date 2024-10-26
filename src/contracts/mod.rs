@@ -25,6 +25,12 @@ pub use safe_l2::*;
 pub mod safe_4337_module;
 pub use safe_4337_module::*;
 
+pub mod safe_web_authn_shared_signer;
+pub use safe_web_authn_shared_signer::*;
+
+pub mod safe_multisend;
+pub use safe_multisend::*;
+
 #[derive(
     Clone,
     ::ethers::contract::EthAbiType,

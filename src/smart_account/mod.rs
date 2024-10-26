@@ -10,6 +10,9 @@ pub use safe_account::*;
 mod safe_standard_account;
 pub use safe_standard_account::*;
 
+mod safe_webauthn_account;
+pub use safe_webauthn_account::*;
+
 mod utils;
 pub use utils::*;
 

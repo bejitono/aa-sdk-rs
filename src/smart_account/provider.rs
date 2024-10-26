@@ -191,7 +191,7 @@ impl<P: JsonRpcClient, A: BaseAccount> SmartAccountMiddleware for SmartAccountPr
 
                 // Update pre-verification gas with the additional paymaster data.
                 let pre_verification_gas = self.account.get_pre_verification_gas(user_op.clone());
-    
+
                 user_op.pre_verification_gas = Some(pre_verification_gas);
             } else {
                 user_op.paymaster_and_data = Some(Bytes::new());

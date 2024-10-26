@@ -26,7 +26,7 @@ where
 
     async fn get_sender_address(&self, init_code: Bytes) -> Result<Address, EntryPointError> {
         let result = self.get_sender_address(init_code).call().await;
-
+        
         match result {
             Ok(_) => Err(EntryPointError::RevertError(format!(
                 "Get sender address must revert."
