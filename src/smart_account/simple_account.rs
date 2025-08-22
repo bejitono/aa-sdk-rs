@@ -38,18 +38,39 @@ pub struct SimpleAccount<P: Provider<Ethereum>> {
     factory_address: Address,
     entry_point: Arc<EntryPointContractWrapper<P, Ethereum>>,
     chain_id: ChainId,
+    salt: U256,
 }
 
 impl<P> SimpleAccount<P>
 where
     P: Provider<Ethereum> + Clone + std::fmt::Debug,
 {
+    /// Creates a new SimpleAccount with default salt (0) - maintains backward compatibility
     pub fn new(
         provider: Arc<P>,
         owner: Address,
         factory_address: Address,
         entry_point_address: Address,
         chain_id: ChainId,
+    ) -> Self {
+        Self::new_with_salt(
+            provider,
+            owner,
+            factory_address,
+            entry_point_address,
+            chain_id,
+            U256::ZERO,
+        )
+    }
+
+    /// Creates a new SimpleAccount with a custom salt for deterministic address generation
+    pub fn new_with_salt(
+        provider: Arc<P>,
+        owner: Address,
+        factory_address: Address,
+        entry_point_address: Address,
+        chain_id: ChainId,
+        salt: U256,
     ) -> Self {
         let entry_point = Arc::new(EntryPointContractWrapper::new(
             entry_point_address,
@@ -63,6 +84,7 @@ where
             factory_address,
             entry_point,
             chain_id,
+            salt,
         }
     }
 }
@@ -110,7 +132,7 @@ where
 
         let call = SimpleAccountFactoryContractCalls::createAccount(createAccountCall {
             owner: self.owner,
-            salt: U256::ZERO,
+            salt: self.salt,
         })
         .abi_encode();
 
@@ -212,7 +234,7 @@ mod tests {
 
         let result = account.get_init_code().await.unwrap();
 
-        let expected_init_code = Bytes::from_str("0x9406cc6185a346906296840746125a0e449764545fbfb9cf0000000000000000000000002c7536e3605d9c16a7a3d7b1898e529396a65c230000000000000000000000000000000000000000000000000000000000000000").unwrap();
+        let expected_init_code = Bytes::from_str("0x91e60e0613810449d098b0b5ec8b51a0fe8c89855fbfb9cf0000000000000000000000002c7536e3605d9c16a7a3d7b1898e529396a65c230000000000000000000000000000000000000000000000000000000000000000").unwrap();
 
         assert_eq!(result, expected_init_code);
     }
@@ -289,7 +311,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "0x982ffac966b962bddf89d3b26fee91da6f68df13"
+            "0xa70edc1c7d11bc88a6b186ee4dcae36e1eaebf77"
                 .parse::<Address>()
                 .unwrap()
         );
@@ -343,9 +365,85 @@ mod tests {
 
         let result = account.sign_user_op(user_op, &signer).await.unwrap();
 
-        let expected_signature: Bytes = "0x20cef8f1e5b636465cabaa6091be01b06d06afe27591892668498e76b4bc9b2d0e454f5e4a42233b243880a92ea906e3be6f064523d67974da53306d4cc746ef1c".parse().unwrap();
+        let expected_signature: Bytes = "0x93a19bad851682aa49a605adc021c2fad9f2265a8a58f699c271ce6a3b391e292ca5dbccef4b85bfaeef2bb41520a673fdcd4bd7fcb5ea2d7a233ad74579da081b".parse().unwrap();
 
         assert_eq!(result, expected_signature);
+    }
+
+    #[tokio::test]
+    async fn test_salt_produces_different_addresses() {
+        let signer: PrivateKeySigner =
+            "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
+                .parse()
+                .unwrap();
+
+        let address: Address = signer.address();
+
+        let wallet = EthereumWallet::from(signer);
+
+        let rpc_url =
+            Url::parse("https://base-sepolia.g.alchemy.com/v2/IVqOyg3PqHzBQJMqa_yZAfyonF9ne2Gx")
+                .unwrap();
+        let provider = ProviderBuilder::new().wallet(wallet).on_http(rpc_url);
+
+        // Create accounts with different salt values
+        let account_salt_0 = SimpleAccount::new_with_salt(
+            Arc::new(provider.clone()),
+            address,
+            Address::from_str(SIMPLE_ACCOUNT_FACTORY_ADDRESS).unwrap(),
+            Address::from_str(ENTRY_POINT_ADDRESS).unwrap(),
+            84532,
+            U256::ZERO,
+        );
+
+        let account_salt_1 = SimpleAccount::new_with_salt(
+            Arc::new(provider.clone()),
+            address,
+            Address::from_str(SIMPLE_ACCOUNT_FACTORY_ADDRESS).unwrap(),
+            Address::from_str(ENTRY_POINT_ADDRESS).unwrap(),
+            84532,
+            U256::from(1),
+        );
+
+        let account_salt_custom = SimpleAccount::new_with_salt(
+            Arc::new(provider.clone()),
+            address,
+            Address::from_str(SIMPLE_ACCOUNT_FACTORY_ADDRESS).unwrap(),
+            Address::from_str(ENTRY_POINT_ADDRESS).unwrap(),
+            84532,
+            U256::from(0xdeadbeefcafe_u64),
+        );
+
+        // Get init codes for all accounts
+        let init_code_0 = account_salt_0.get_init_code().await.unwrap();
+        let init_code_1 = account_salt_1.get_init_code().await.unwrap();
+        let init_code_custom = account_salt_custom.get_init_code().await.unwrap();
+
+        // Verify that different salts produce different init codes
+        assert_ne!(init_code_0, init_code_1);
+        assert_ne!(init_code_0, init_code_custom);
+        assert_ne!(init_code_1, init_code_custom);
+
+        // Get predicted addresses for all accounts
+        let address_0 = account_salt_0.get_counterfactual_address().await.unwrap();
+        let address_1 = account_salt_1.get_counterfactual_address().await.unwrap();
+        let address_custom = account_salt_custom.get_counterfactual_address().await.unwrap();
+
+        // Verify that different salts produce different addresses
+        assert_ne!(address_0, address_1);
+        assert_ne!(address_0, address_custom);
+        assert_ne!(address_1, address_custom);
+
+        // Verify that default salt account matches regular new()
+        let account_default = SimpleAccount::new(
+            Arc::new(provider.clone()),
+            address,
+            Address::from_str(SIMPLE_ACCOUNT_FACTORY_ADDRESS).unwrap(),
+            Address::from_str(ENTRY_POINT_ADDRESS).unwrap(),
+            84532,
+        );
+        let address_default = account_default.get_counterfactual_address().await.unwrap();
+        assert_eq!(address_0, address_default);
     }
 
     #[tokio::test]
